@@ -7,9 +7,21 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"github.com/gin-contrib/cors"
+	"log" 
 	"time"
 )
+type CommitWithIssues struct {
+	CommitID  string  `json:"commit_id"`
+	RepoURL   string  `json:"repo_url"`
+	Status    string  `json:"status"`
+	Timestamp string  `json:"timestamp"`
+	Issues    []Issue `json:"issues"`
+}
 
+type HistoryResponse struct {
+	Commits []CommitWithIssues `json:"commits"`
+}
 type File struct {
 	Filename string `json:"filename"`
 	Content  string `json:"content"`
@@ -138,16 +150,77 @@ func analyzeCommit(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+func getHistory(c *gin.Context) {
+	// Optional limit query param (default 5)
+	limit := c.DefaultQuery("limit", "5")
+
+	rows, err := db.Query(
+		"SELECT commit_id, repo_url, status, timestamp FROM commits ORDER BY id DESC LIMIT ?",
+		limit,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch history"})
+		return
+	}
+	defer rows.Close()
+
+	var commits []CommitWithIssues
+
+	for rows.Next() {
+		var commit CommitWithIssues
+		if err := rows.Scan(&commit.CommitID, &commit.RepoURL, &commit.Status, &commit.Timestamp); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse commits"})
+			return
+		}
+
+		// Fetch issues for this commit
+		issueRows, err := db.Query(
+			"SELECT type, filename, line, message, retries FROM issues WHERE commit_id = ?",
+			commit.CommitID,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch issues"})
+			return
+		}
+
+		var issues []Issue
+		for issueRows.Next() {
+			var issue Issue
+			if err := issueRows.Scan(&issue.Type, &issue.Filename, &issue.Line, &issue.Message, &issue.Retries); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse issues"})
+				return
+			}
+			issues = append(issues, issue)
+		}
+		issueRows.Close()
+
+		commit.Issues = issues
+		commits = append(commits, commit)
+	}
+
+	c.JSON(http.StatusOK, HistoryResponse{Commits: commits})
+}
+
 
 func main() {
 	initDB()
 	defer db.Close()
 	r := gin.Default()
+	r.Use(cors.Default())
+
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	r.GET("/history", getHistory)
+	r.Use(cors.New(cors.Config{
+    AllowOrigins:     []string{"http://localhost:3000"},
+    AllowMethods:     []string{"GET", "POST", "OPTIONS"},
+    AllowHeaders:     []string{"Origin", "Content-Type"},
+    AllowCredentials: true,
+}))
+
 
 	// Analyze commit
 	r.POST("/analyze-commit", analyzeCommit)
