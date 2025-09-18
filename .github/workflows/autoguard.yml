@@ -1,0 +1,48 @@
+name: AutoGuard CI Check
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [ main ]
+
+jobs:
+  autoguard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Send commit files to AutoGuard
+        run: |
+          files=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          payload="{\"commit_id\": \"${{ github.sha }}\", \"repo_url\": \"${{ github.repository }}\", \"files\": []}"
+          
+          for file in $files; do
+            if [[ -f $file ]]; then
+              content=$(cat $file | base64 | tr -d '\n')
+              payload=$(echo $payload | jq \
+                --arg fn "$file" \
+                --arg content "$(echo $content | base64 --decode)" \
+                '.files += [{"filename": $fn, "content": $content}]')
+            fi
+          done
+
+          echo $payload | jq '.' > request.json
+          curl -s -X POST "https://24b52011fec0.ngrok-free.app/analyze-commit" \
+            -H "Content-Type: application/json" \
+            -d @request.json -o response.json
+
+
+          cat response.json
+          
+          status=$(jq -r '.status' response.json)
+          if [ "$status" = "fail" ]; then
+            echo "AutoGuard found issues ❌"
+            exit 1
+          else
+            echo "AutoGuard passed ✅"
+          fi

@@ -1,0 +1,12 @@
+name: AutoGuard Health Check
+
+on:
+  workflow_dispatch:   # run manually from GitHub UI
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping AutoGuard /health
+        run: |
+          curl -v "https://24b52011fec0.ngrok-free.app/health"
